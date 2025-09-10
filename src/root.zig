@@ -1,23 +1,121 @@
-//! By convention, root.zig is the root source file when making a library.
+//! `build.zig.nix` can be used to produce a nix expression representing the dependencies needed to build a zig project.
+//!
+//! # Usage
+//!
+//! `build.zig.nix` should be imported in and used by your build system as follows:
+//!
+//! ```zig
+//! TODO: fill out build system example
+//! ```
+//!
+//! You may use one of a variety of functions in this library for your
+//! build steps, however the recommended interface is `writeNixPackageSetForFile`,
+//! which will read and parse your `build.zig.zon` file and write out a
+//! `deps.nix` file for you.
+
 const std = @import("std");
+const mem = std.mem;
+const fs = std.fs;
+const zon = std.zon;
 
-pub fn generateNixPackageSet() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
+const Io = std.Io;
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+const nix_expression = @import("./nix_expression.zig");
 
-    try stdout.flush(); // Don't forget to flush!
+const BuildZigZon = @import("./BuildZigZon.zig");
+
+/// Write Nix Package Set For File
+///
+/// Opens and parses a `build.zig.zon` file, produces a nix
+/// expression for it's dependencies and writes it to the provided `deps.nix` path.
+pub fn writeNixPackageSetForFile(
+    allocator: mem.Allocator,
+    build_zig_zon_path: []const u8,
+    deps_nix_path: []const u8,
+) !void {
+    const deps_nix_contents = try generateNixPackageSetForFile(allocator, build_zig_zon_path);
+    defer allocator.free(deps_nix_contents);
+
+    var deps_nix = try fs.cwd().createFile(deps_nix_path, .{});
+    defer deps_nix.close();
+
+    var buffer: [1024]u8 = undefined;
+    var file_writer = deps_nix.writer(&buffer);
+
+    var writer = file_writer.interface;
+    try writer.writeAll(deps_nix_contents);
+
+    file_writer.end();
 }
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
+/// Generate Nix Package Set For File
+///
+/// Opens and parses a `build.zig.zon` file, and produces an string containing
+/// the file contents for a nix expression based on the dependencies needed for
+/// that `build.zig.zon` file.
+///
+/// The caller is responsible for the memory of the string returned.
+pub fn generateNixPackageSetForFile(
+    allocator: mem.Allocator,
+    build_zig_zon_path: []const u8,
+) ![]const u8 {
+    var build_zig_zon = try fs.cwd().openFile(build_zig_zon_path, .{});
+    defer build_zig_zon.close();
+
+    var buffer: [1024]u8 = undefined;
+    const file_reader = build_zig_zon.reader(&buffer);
+
+    var reader = file_reader.interface;
+    const zon_contents = try reader.allocRemaining(allocator, .unlimited);
+    defer allocator.free(zon_contents);
+
+    return generateNixPackageSetForString(zon_contents);
 }
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+/// Generate Nix Package Set For String
+///
+/// Parses the string contents of a `build.zig.zon` file, and produces an string containing
+/// the file contents for a nix expression based on the dependencies needed for
+/// that `build.zig.zon` file.
+///
+/// The caller is responsible for the memory of the string returned.
+pub fn generateNixPackageSetForString(
+    allocator: mem.Allocator,
+    build_zig_zon: [:0]const u8,
+) ![]const u8 {
+    const options = zon.parse.Options{
+        .ignore_unknown_fields = true,
+        .free_on_error = true,
+    };
+
+    const parsed_zon = try zon.parse.fromSlice(
+        BuildZigZon,
+        allocator,
+        build_zig_zon,
+        null,
+        options,
+    );
+    defer zon.parse.free(parsed_zon);
+
+    return generateNixPackageSetForDependencies(allocator, parsed_zon.dependencies);
+}
+
+/// Generate Nix Package Set For a list of Dependencies
+///
+/// Converts the typed representation of a `build.zig.zon` file's
+/// dependencies into produces a string containing the file
+/// contents for a nix expression.
+///
+/// The caller is responsible for the memory of the string returned.
+pub fn generateNixPackageSetForDependencies(
+    allocator: mem.Allocator,
+    dependencies: []BuildZigZon.Dependency,
+) ![]const u8 {
+    const bufferLength = nix_expression.calculateLength(dependencies);
+    var buffer = allocator.alloc(u8, bufferLength);
+
+    var writer = Io.Writer.fixed(&buffer);
+    nix_expression.write(&writer, dependencies);
+
+    return buffer;
 }
