@@ -45,7 +45,7 @@ pub fn writeNixPackageSetForFile(
     var writer = file_writer.interface;
     try writer.writeAll(deps_nix_contents);
 
-    file_writer.end();
+    try file_writer.end();
 }
 
 /// Generate Nix Package Set For File
@@ -69,7 +69,7 @@ pub fn generateNixPackageSetForFile(
     const zon_contents = try reader.allocRemaining(allocator, .unlimited);
     defer allocator.free(zon_contents);
 
-    return generateNixPackageSetForString(zon_contents);
+    return generateNixPackageSetForString(allocator, zon_contents[0..zon_contents.len :0]);
 }
 
 /// Generate Nix Package Set For String
@@ -95,7 +95,7 @@ pub fn generateNixPackageSetForString(
         null,
         options,
     );
-    defer zon.parse.free(parsed_zon);
+    defer zon.parse.free(allocator, parsed_zon);
 
     return generateNixPackageSetForDependencies(allocator, parsed_zon.dependencies);
 }
@@ -112,10 +112,14 @@ pub fn generateNixPackageSetForDependencies(
     dependencies: []BuildZigZon.Dependency,
 ) ![]const u8 {
     const bufferLength = nix_expression.calculateLength(dependencies);
-    var buffer = allocator.alloc(u8, bufferLength);
+    const buffer = try allocator.alloc(u8, bufferLength);
 
-    var writer = Io.Writer.fixed(&buffer);
-    nix_expression.write(&writer, dependencies);
+    var writer = Io.Writer.fixed(buffer);
+    try nix_expression.write(&writer, dependencies);
 
     return buffer;
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }
