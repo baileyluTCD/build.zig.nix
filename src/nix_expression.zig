@@ -12,7 +12,7 @@ const BuildZigZon = @import("./BuildZigZon.zig");
 /// for the allocation with `calculateLength`.
 pub fn write(
     writer: *Io.Writer,
-    dependencies: []BuildZigZon.Dependency,
+    dependencies: []const BuildZigZon.Dependency,
 ) !void {
     try writeHeader(writer);
 
@@ -27,13 +27,14 @@ pub fn write(
 /// Predict the exact length (in bytes) needed to allocate
 /// the full nix expression based on the list of
 /// dependencies.
-pub fn calculateLength(dependencies: []BuildZigZon.Dependency) usize {
+pub fn calculateLength(dependencies: []const BuildZigZon.Dependency) usize {
     var sum = header_text.len + footer_text.len;
 
     for (dependencies) |dependency| {
         const unqiue_text_len = dependency.name.len +
             dependency.url.len +
-            dependency.hash.len;
+            dependency.hash.len -
+            dependency_text_formatting_chars_count;
 
         sum += dependency_text.len + unqiue_text_len;
     }
@@ -67,14 +68,17 @@ pub inline fn writeHeader(writer: *Io.Writer) !void {
 ///
 /// Contains formatting literals as is expected to be used with `print`.
 pub const dependency_text =
-    \\  {
+    \\  {{
     \\    name = "{s}";
-    \\    path = fetchurl {
+    \\    path = fetchurl {{
     \\      url = "{s}";
     \\      hash = "{s}";
-    \\    };
-    \\  }
+    \\    }};
+    \\  }}
+    \\
 ;
+
+const dependency_text_formatting_chars_count = 4 + 9;
 
 /// Write Dependency
 ///
@@ -93,13 +97,57 @@ pub inline fn writeDependency(
 /// Footer Text
 ///
 /// Text to print at the bottom of the nix expression.
-pub const footer_text =
-    \\]
-;
+pub const footer_text = "]";
 
 /// Write Footer
 ///
 /// Prints `footer_text` to the writer.
 pub inline fn writeFooter(writer: *Io.Writer) !void {
     try writer.writeAll(footer_text);
+}
+
+const testing = std.testing;
+
+const test_dependencies = [_]BuildZigZon.Dependency{
+    BuildZigZon.Dependency{
+        .name = "dep-one",
+        .url = "git+https://github.com/dep/one",
+        .hash = "sha256-4yRqfY8r2Ar9Fr45ikD/8jK+H3g4veEHfXa9BorLxXg=",
+    },
+    BuildZigZon.Dependency{
+        .name = "dep-two",
+        .url = "https://dep-two.com/tarball",
+        .hash = "sha256-wq7bZ1/IlmmLkSa3GUJgK17dTWcKyf5A+ndS9yRwB88=",
+    },
+};
+
+const test_write_output =
+    header_text ++
+    \\  {
+    \\    name = "dep-one";
+    \\    path = fetchurl {
+    \\      url = "git+https://github.com/dep/one";
+    \\      hash = "sha256-4yRqfY8r2Ar9Fr45ikD/8jK+H3g4veEHfXa9BorLxXg=";
+    \\    };
+    \\  }
+    \\  {
+    \\    name = "dep-two";
+    \\    path = fetchurl {
+    \\      url = "https://dep-two.com/tarball";
+    \\      hash = "sha256-wq7bZ1/IlmmLkSa3GUJgK17dTWcKyf5A+ndS9yRwB88=";
+    \\    };
+    \\  }
+    \\
+    ++ footer_text;
+
+test "nix expression is formed correctly and has correct length" {
+    const bufLen = calculateLength(&test_dependencies);
+    const buffer = try testing.allocator.alloc(u8, bufLen);
+    defer testing.allocator.free(buffer);
+
+    var writer = Io.Writer.fixed(buffer);
+    try write(&writer, &test_dependencies);
+
+    try testing.expectEqual(writer.end, buffer.len);
+    try testing.expectEqualStrings(test_write_output, buffer);
 }
