@@ -1,4 +1,5 @@
-//! `build.zig.nix` can be used to produce a nix expression representing the dependencies needed to build a zig project.
+//! `build.zig.nix` can be used to produce a nix expression representing
+//! the dependencies needed to build a zig project.
 //!
 //! # Usage
 //!
@@ -32,8 +33,13 @@ pub fn writeNixPackageSetForFile(
     allocator: mem.Allocator,
     build_zig_zon_path: []const u8,
     deps_nix_path: []const u8,
+    diagnostics: ?*std.ArrayList([]const u8),
 ) !void {
-    const deps_nix_contents = try generateNixPackageSetForFile(allocator, build_zig_zon_path);
+    const deps_nix_contents = try generateNixPackageSetForFile(
+        allocator,
+        build_zig_zon_path,
+        diagnostics,
+    );
     defer allocator.free(deps_nix_contents);
 
     var deps_nix = try fs.cwd().createFile(deps_nix_path, .{});
@@ -58,6 +64,7 @@ pub fn writeNixPackageSetForFile(
 pub fn generateNixPackageSetForFile(
     allocator: mem.Allocator,
     build_zig_zon_path: []const u8,
+    diagnostics: ?*std.ArrayList([]const u8),
 ) ![]const u8 {
     var build_zig_zon = try fs.cwd().openFile(build_zig_zon_path, .{});
     defer build_zig_zon.close();
@@ -69,47 +76,44 @@ pub fn generateNixPackageSetForFile(
     const zon_contents = try reader.allocRemaining(allocator, .unlimited);
     defer allocator.free(zon_contents);
 
-    return generateNixPackageSetForString(allocator, zon_contents[0..zon_contents.len :0]);
+    return generateNixPackageSetForString(
+        allocator,
+        zon_contents[0..zon_contents.len :0],
+        diagnostics,
+    );
 }
 
 /// Generate Nix Package Set For String
 ///
-/// Parses the string contents of a `build.zig.zon` file, and produces an string containing
-/// the file contents for a nix expression based on the dependencies needed for
-/// that `build.zig.zon` file.
+/// Parses the string contents of a `build.zig.zon` file, and
+/// produces an string containing the file contents for a nix
+/// expression based on the dependencies needed for that
+/// `build.zig.zon` file.
 ///
 /// The caller is responsible for the memory of the string returned.
 pub fn generateNixPackageSetForString(
     allocator: mem.Allocator,
     build_zig_zon: [:0]const u8,
+    diagnostics: ?*std.ArrayList([]const u8),
 ) ![]const u8 {
-    const options = zon.parse.Options{
-        .ignore_unknown_fields = true,
-        .free_on_error = true,
-    };
+    const parsed_zon = try BuildZigZon.parse(allocator, build_zig_zon, diagnostics);
+    defer parsed_zon.deinit(allocator);
 
-    const parsed_zon = try zon.parse.fromSlice(
-        BuildZigZon,
+    return generateNixPackageSetForDependencies(
         allocator,
-        build_zig_zon,
-        null,
-        options,
+        parsed_zon.dependencies,
     );
-    defer zon.parse.free(allocator, parsed_zon);
-
-    return generateNixPackageSetForDependencies(allocator, parsed_zon.dependencies);
 }
 
 /// Generate Nix Package Set For a list of Dependencies
 ///
-/// Converts the typed representation of a `build.zig.zon` file's
-/// dependencies into produces a string containing the file
-/// contents for a nix expression.
+/// Converts the typed representation of a `build.zig.zon` file's dependencies
+/// into produces a string containing the file contents for a nix expression.
 ///
 /// The caller is responsible for the memory of the string returned.
 pub fn generateNixPackageSetForDependencies(
     allocator: mem.Allocator,
-    dependencies: []BuildZigZon.Dependency,
+    dependencies: []const BuildZigZon.Dependency,
 ) ![]const u8 {
     const bufferLength = nix_expression.calculateLength(dependencies);
     const buffer = try allocator.alloc(u8, bufferLength);
@@ -118,6 +122,36 @@ pub fn generateNixPackageSetForDependencies(
     try nix_expression.write(&writer, dependencies);
 
     return buffer;
+}
+
+const testing = std.testing;
+
+test "a stringified build.zig.zon produces an output expression" {
+    var diagnostics: std.ArrayList([]const u8) = .empty;
+    defer diagnostics.deinit(testing.allocator);
+
+    const output = try generateNixPackageSetForString(
+        testing.allocator,
+        BuildZigZon.test_build_zig_zon,
+        &diagnostics,
+    );
+    defer testing.allocator.free(output);
+
+    try testing.expectEqual(diagnostics.items.len, 0);
+
+    try testing.expect(mem.containsAtLeast(u8, output, 1, "dep_one"));
+    try testing.expect(mem.containsAtLeast(u8, output, 1, "dep_two"));
+}
+
+test "a list of dependencies produces an output expression" {
+    const output = try generateNixPackageSetForDependencies(
+        testing.allocator,
+        BuildZigZon.Dependency.test_dependencies,
+    );
+    defer testing.allocator.free(output);
+
+    try testing.expect(mem.containsAtLeast(u8, output, 1, "dep-one"));
+    try testing.expect(mem.containsAtLeast(u8, output, 1, "dep-two"));
 }
 
 test {
